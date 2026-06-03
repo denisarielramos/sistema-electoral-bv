@@ -937,35 +937,170 @@ const Dashboard = ({ currentUser, onLogout }) => {
     return [];
   }, [estructura, currentUser]);
 
-  const resultadosBusqueda = useMemo(() => {
+  // Helper para verificar si una persona coincide con la búsqueda
+  const personaMatchesSearch = useCallback((persona, tipo) => {
     const qRaw = normalizeText(searchCI);
-    if (!qRaw) return personasVisibles;
+    if (!qRaw) return true;
     const tokens = qRaw.split(" ").filter(Boolean);
-    return personasVisibles.filter(({ tipo, persona }) => {
-      const ci = normalizeText(persona?.ci);
-      const nombre = normalizeText(persona?.nombre);
-      const apellido = normalizeText(persona?.apellido);
-      const full1 = `${nombre} ${apellido}`.trim();
-      const full2 = `${apellido} ${nombre}`.trim();
-      const telefono = normalizeText(persona?.telefono);
-      const seccional = normalizeText(persona?.seccional);
-      const local = normalizeText(persona?.local_votacion);
-      const mesa = normalizeText(persona?.mesa);
-      const orden = normalizeText(persona?.orden);
-      const direccion = normalizeText(persona?.direccion || persona?.direccion_override);
-      const rolText = normalizeText(
-        tipo === "coordinador" ? "coordinador" :
-        tipo === "subcoordinador" ? "subcoordinador" :
-        "votante"
-      );
-      return tokens.every((t) =>
-        ci.includes(t) || nombre.includes(t) || apellido.includes(t) ||
-        full1.includes(t) || full2.includes(t) || telefono.includes(t) ||
-        seccional.includes(t) || local.includes(t) || mesa.includes(t) ||
-        orden.includes(t) || direccion.includes(t) || rolText.includes(t)
-      );
+    const ci = normalizeText(persona?.ci);
+    const nombre = normalizeText(persona?.nombre);
+    const apellido = normalizeText(persona?.apellido);
+    const full1 = `${nombre} ${apellido}`.trim();
+    const full2 = `${apellido} ${nombre}`.trim();
+    const telefono = normalizeText(persona?.telefono);
+    const seccional = normalizeText(persona?.seccional);
+    const local = normalizeText(persona?.local_votacion);
+    const mesa = normalizeText(persona?.mesa);
+    const orden = normalizeText(persona?.orden);
+    const direccion = normalizeText(persona?.direccion || persona?.direccion_override);
+    const rolText = normalizeText(
+      tipo === "coordinador" ? "coordinador" :
+      tipo === "subcoordinador" ? "subcoordinador" :
+      "votante"
+    );
+    return tokens.every((t) =>
+      ci.includes(t) || nombre.includes(t) || apellido.includes(t) ||
+      full1.includes(t) || full2.includes(t) || telefono.includes(t) ||
+      seccional.includes(t) || local.includes(t) || mesa.includes(t) ||
+      orden.includes(t) || direccion.includes(t) || rolText.includes(t)
+    );
+  }, [searchCI]);
+
+  // Estructura filtrada para búsqueda jerárquica
+  const estructuraFiltrada = useMemo(() => {
+    const qRaw = normalizeText(searchCI);
+    if (!qRaw) {
+      // Sin búsqueda: devolver estructura completa
+      return {
+        coordinadores: estructura.coordinadores || [],
+        subcoordinadores: estructura.subcoordinadores || [],
+        votantes: estructura.votantes || [],
+        matchedCIs: new Set(),
+        totalMatches: 0,
+      };
+    }
+
+    const matchedCIs = new Set();
+    const coordsToShow = new Set();
+    const subsToShow = new Set();
+    const votantesToShow = new Set();
+
+    // Primero, encontrar todas las personas que coinciden
+    (estructura.coordinadores || []).forEach((coord) => {
+      if (personaMatchesSearch(coord, "coordinador")) {
+        matchedCIs.add(normalizeCI(coord.ci));
+        coordsToShow.add(normalizeCI(coord.ci));
+      }
     });
-  }, [searchCI, personasVisibles]);
+
+    (estructura.subcoordinadores || []).forEach((sub) => {
+      if (personaMatchesSearch(sub, "subcoordinador")) {
+        matchedCIs.add(normalizeCI(sub.ci));
+        subsToShow.add(normalizeCI(sub.ci));
+        // Mostrar el coordinador padre
+        if (sub.coordinador_ci) {
+          coordsToShow.add(normalizeCI(sub.coordinador_ci));
+        }
+      }
+    });
+
+    (estructura.votantes || []).forEach((vot) => {
+      if (personaMatchesSearch(vot, "votante")) {
+        matchedCIs.add(normalizeCI(vot.ci));
+        votantesToShow.add(normalizeCI(vot.ci));
+        // Mostrar el padre (sub o coord)
+        if (vot.asignado_por) {
+          const asignadoPorCI = normalizeCI(vot.asignado_por);
+          // Verificar si es un subcoordinador
+          const isSub = (estructura.subcoordinadores || []).some(
+            (s) => normalizeCI(s.ci) === asignadoPorCI
+          );
+          if (isSub) {
+            subsToShow.add(asignadoPorCI);
+            // También mostrar el coordinador del sub
+            const sub = (estructura.subcoordinadores || []).find(
+              (s) => normalizeCI(s.ci) === asignadoPorCI
+            );
+            if (sub?.coordinador_ci) {
+              coordsToShow.add(normalizeCI(sub.coordinador_ci));
+            }
+          } else {
+            // Es votante directo de coordinador
+            coordsToShow.add(asignadoPorCI);
+          }
+        }
+        if (vot.coordinador_ci) {
+          coordsToShow.add(normalizeCI(vot.coordinador_ci));
+        }
+      }
+    });
+
+    // Si un coordinador coincide, mostrar toda su estructura
+    coordsToShow.forEach((coordCI) => {
+      if (matchedCIs.has(coordCI)) {
+        // El coord coincide, mostrar todos sus subs y votantes
+        (estructura.subcoordinadores || []).forEach((sub) => {
+          if (normalizeCI(sub.coordinador_ci) === coordCI) {
+            subsToShow.add(normalizeCI(sub.ci));
+          }
+        });
+        (estructura.votantes || []).forEach((vot) => {
+          if (normalizeCI(vot.coordinador_ci) === coordCI) {
+            votantesToShow.add(normalizeCI(vot.ci));
+          }
+        });
+      }
+    });
+
+    // Si un sub coincide, mostrar todos sus votantes
+    subsToShow.forEach((subCI) => {
+      if (matchedCIs.has(subCI)) {
+        (estructura.votantes || []).forEach((vot) => {
+          if (normalizeCI(vot.asignado_por) === subCI) {
+            votantesToShow.add(normalizeCI(vot.ci));
+          }
+        });
+      }
+    });
+
+    return {
+      coordinadores: (estructura.coordinadores || []).filter((c) =>
+        coordsToShow.has(normalizeCI(c.ci))
+      ),
+      subcoordinadores: (estructura.subcoordinadores || []).filter((s) =>
+        subsToShow.has(normalizeCI(s.ci))
+      ),
+      votantes: (estructura.votantes || []).filter((v) =>
+        votantesToShow.has(normalizeCI(v.ci))
+      ),
+      matchedCIs,
+      totalMatches: matchedCIs.size,
+    };
+  }, [searchCI, estructura, personaMatchesSearch]);
+
+  // Auto-expandir ramas con coincidencias
+  useEffect(() => {
+    if (!normalizeText(searchCI)) return;
+    const toExpand = {};
+    
+    // Expandir coordinadores que tienen coincidencias en su rama
+    estructuraFiltrada.coordinadores.forEach((coord) => {
+      toExpand[normalizeCI(coord.ci)] = true;
+    });
+    
+    // Expandir subcoordinadores que tienen coincidencias
+    estructuraFiltrada.subcoordinadores.forEach((sub) => {
+      toExpand[normalizeCI(sub.ci)] = true;
+    });
+    
+    setExpandedCoords((prev) => ({ ...prev, ...toExpand }));
+  }, [searchCI, estructuraFiltrada]);
+
+  // Contador de resultados para la UI
+  const searchResultCount = useMemo(() => {
+    if (!normalizeText(searchCI)) return 0;
+    return estructuraFiltrada.totalMatches;
+  }, [searchCI, estructuraFiltrada]);
 
   // ======================= PDF =======================
   const descargarPDF = async () => {
@@ -1188,104 +1323,11 @@ const Dashboard = ({ currentUser, onLogout }) => {
             </div>
             {normalizeText(searchCI) && (
               <p className="text-xs text-slate-500 mt-2">
-                {resultadosBusqueda.length} resultado{resultadosBusqueda.length !== 1 ? "s" : ""}
+                {searchResultCount} resultado{searchResultCount !== 1 ? "s" : ""} encontrado{searchResultCount !== 1 ? "s" : ""}
               </p>
             )}
           </div>
         </section>
-
-        {/* =========== RESULTADOS BÚSQUEDA =========== */}
-        {normalizeText(searchCI) && (
-          <section aria-label="Resultados de búsqueda">
-            <div className="bg-white border border-slate-200 rounded-xl shadow-card overflow-hidden">
-              <div className="px-5 py-3 border-b border-slate-100 bg-slate-50">
-                <h3 className="font-semibold text-sm text-slate-700">
-                  Resultados de búsqueda
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Solo dentro de la estructura permitida para tu rol.
-                </p>
-              </div>
-
-              <div className="p-4 space-y-2">
-                {resultadosBusqueda.length === 0 ? (
-                  <div className="text-center py-8">
-                    <Search className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                    <p className="text-sm text-slate-500">
-                      No se encontraron coincidencias.
-                    </p>
-                  </div>
-                ) : (
-                  resultadosBusqueda.slice(0, 50).map(({ tipo, persona }) => (
-                    <div
-                      key={`${tipo}-${persona.ci}`}
-                      className="border border-slate-200 rounded-lg p-3 hover:border-slate-300 hover:bg-slate-50 transition-colors"
-                    >
-                      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex flex-wrap items-center gap-2 mb-0.5">
-                            <span className={`font-semibold text-sm truncate ${persona.nombre ? "text-slate-800" : "text-slate-400 italic"}`}>
-                              {persona.nombre ? `${persona.nombre} ${persona.apellido || ""}`.trim() : "Cargando..."}
-                            </span>
-                            <Badge
-                              variant={
-                                tipo === "coordinador"
-                                  ? "red"
-                                  : tipo === "subcoordinador"
-                                  ? "blue"
-                                  : "default"
-                              }
-                            >
-                              {tipo === "coordinador"
-                                ? "Coordinador"
-                                : tipo === "subcoordinador"
-                                ? "Subcoordinador"
-                                : "Votante"}
-                            </Badge>
-                            {tipo === "votante" && persona.voto_confirmado && (
-                              <Badge variant="green">
-                                <Check className="w-3 h-3 mr-1" />
-                                Confirmado
-                              </Badge>
-                            )}
-                          </div>
-                          <p className="text-xs text-slate-500">CI: {persona.ci}</p>
-                        </div>
-                        <div className="flex gap-1.5 shrink-0 flex-wrap">
-                          <ActionBtn onClick={() => abrirTelefono(tipo, persona)} title="Editar teléfono" variant="green">
-                            <Phone className="w-3.5 h-3.5" />
-                          </ActionBtn>
-                          <ActionBtn onClick={() => abrirDireccion(tipo, persona)} title="Editar dirección" variant="blue">
-                            <MapPin className="w-3.5 h-3.5" />
-                          </ActionBtn>
-                          {tipo === "votante" && !persona.voto_confirmado && canConfirmarVoto(persona) && (
-                            <ActionBtn onClick={() => abrirConfirmVoto(persona)} title="Confirmar voto" variant="success-solid">
-                              <Check className="w-3.5 h-3.5" />
-                            </ActionBtn>
-                          )}
-                          {tipo === "votante" && persona.voto_confirmado && canAnularConfirmacion(persona) && (
-                            <ActionBtn onClick={() => abrirAnularConfirmacion(persona)} title="Anular confirmación" variant="danger">
-                              <X className="w-3.5 h-3.5" />
-                            </ActionBtn>
-                          )}
-                          <ActionBtn onClick={() => quitarPersona(persona.ci, tipo)} title="Eliminar" variant="danger">
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </ActionBtn>
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                )}
-
-                {resultadosBusqueda.length > 50 && (
-                  <p className="text-xs text-center text-slate-400 pt-2">
-                    Mostrando 50 resultados. Refine la búsqueda para acotar.
-                  </p>
-                )}
-              </div>
-            </div>
-          </section>
-        )}
 
         {/* =========== MI ESTRUCTURA =========== */}
         <section aria-label="Mi estructura">
@@ -1310,14 +1352,29 @@ const Dashboard = ({ currentUser, onLogout }) => {
               {/* ====== SUPERADMIN ====== */}
               {!loadingEstructura && currentUser.role === "superadmin" && (
                 <div className="space-y-2">
-                  {(estructura.coordinadores || []).length === 0 && (
+                  {/* Mensaje de sin resultados de búsqueda */}
+                  {normalizeText(searchCI) && estructuraFiltrada.coordinadores.length === 0 && (
+                    <div className="text-center py-10">
+                      <Search className="w-10 h-10 text-slate-200 mx-auto mb-2" />
+                      <p className="text-sm text-slate-500">No se encontraron resultados en tu estructura.</p>
+                      <button
+                        onClick={() => setSearchCI("")}
+                        className="mt-3 text-xs text-brand-600 hover:text-brand-700 underline bg-transparent border-0 shadow-none p-0"
+                      >
+                        Limpiar búsqueda
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Mensaje de estructura vacía (sin búsqueda) */}
+                  {!normalizeText(searchCI) && (estructura.coordinadores || []).length === 0 && (
                     <div className="text-center py-10">
                       <Users className="w-10 h-10 text-slate-200 mx-auto mb-2" />
                       <p className="text-sm text-slate-400">No hay coordinadores aún.</p>
                     </div>
                   )}
 
-                  {(estructura.coordinadores || []).map((coord) => {
+                  {estructuraFiltrada.coordinadores.map((coord) => {
                     const coordCI = normalizeCI(coord.ci);
                     const coordCounts = voteCountsByCoord[coordCI] ?? { confirmed: 0, total: 0 };
                     return (
@@ -1360,7 +1417,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                       {expandedCoords[coordCI] && (
                         <div className="border-t border-slate-100 bg-slate-50/50 px-4 pb-4 pt-3 overflow-x-auto animate-fade-in">
                           <div className="space-y-2 min-w-0">
-                            {(estructura.subcoordinadores || [])
+                            {estructuraFiltrada.subcoordinadores
                               .filter((s) => normalizeCI(s.coordinador_ci) === coordCI)
                               .map((sub) => {
                                 const subCI = normalizeCI(sub.ci);
@@ -1413,7 +1470,9 @@ const Dashboard = ({ currentUser, onLogout }) => {
                                   {expandedCoords[subCI] && (
                                     <div className="border-t border-slate-100 bg-slate-50 px-3 pb-3 pt-2 overflow-x-auto animate-fade-in">
                                       <div className="space-y-1.5 min-w-0">
-                                        {getVotantesDeSubcoord(estructura, sub.ci).map((v) => (
+                                        {estructuraFiltrada.votantes
+                                          .filter((v) => normalizeCI(v.asignado_por) === subCI)
+                                          .map((v) => (
                                           <VotanteRow
                                             key={v.ci}
                                             v={v}
@@ -1426,7 +1485,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                                             canAnular={canAnularConfirmacion}
                                           />
                                         ))}
-                                        {getVotantesDeSubcoord(estructura, sub.ci).length === 0 && (
+                                        {estructuraFiltrada.votantes.filter((v) => normalizeCI(v.asignado_por) === subCI).length === 0 && (
                                           <p className="text-xs text-slate-400 py-2 text-center">
                                             Sin votantes asignados.
                                           </p>
@@ -1438,9 +1497,9 @@ const Dashboard = ({ currentUser, onLogout }) => {
                               );
                               })}
 
-                            {(estructura.subcoordinadores || []).filter(
+                            {estructuraFiltrada.subcoordinadores.filter(
                               (s) => normalizeCI(s.coordinador_ci) === coordCI
-                            ).length === 0 && (
+                            ).length === 0 && !normalizeText(searchCI) && (
                               <p className="text-xs text-slate-400 text-center py-2">
                                 Sin subcoordinadores asignados.
                               </p>
@@ -1448,7 +1507,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
 
                             {/* Direct voters of this coordinator */}
                             {(() => {
-                              const directVoters = (estructura.votantes || []).filter(
+                              const directVoters = estructuraFiltrada.votantes.filter(
                                 (v) => normalizeCI(v.asignado_por) === coordCI
                               );
                               if (directVoters.length === 0) return null;
@@ -1491,7 +1550,27 @@ const Dashboard = ({ currentUser, onLogout }) => {
               {/* ====== COORDINADOR ====== */}
               {!loadingEstructura && currentUser.role === "coordinador" && (
                 <div className="space-y-2">
-                  {getMisSubcoordinadores(estructura, currentUser).map((sub) => {
+                  {/* Mensaje de sin resultados de búsqueda */}
+                  {normalizeText(searchCI) && estructuraFiltrada.subcoordinadores.length === 0 && estructuraFiltrada.votantes.length === 0 && (
+                    <div className="text-center py-10">
+                      <Search className="w-10 h-10 text-slate-200 mx-auto mb-2" />
+                      <p className="text-sm text-slate-500">No se encontraron resultados en tu estructura.</p>
+                      <button
+                        onClick={() => setSearchCI("")}
+                        className="mt-3 text-xs text-brand-600 hover:text-brand-700 underline bg-transparent border-0 shadow-none p-0"
+                      >
+                        Limpiar búsqueda
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Subcoordinadores filtrados */}
+                  {(() => {
+                    const miCI = normalizeCI(currentUser.ci);
+                    const misSubs = estructuraFiltrada.subcoordinadores.filter(
+                      (s) => normalizeCI(s.coordinador_ci) === miCI
+                    );
+                    return misSubs.map((sub) => {
                     const subCI = normalizeCI(sub.ci);
                     const subCounts = voteCountsBySub[subCI] ?? { confirmed: 0, total: 0 };
                     return (
@@ -1555,7 +1634,9 @@ const Dashboard = ({ currentUser, onLogout }) => {
                             Votantes asignados
                           </p>
                           <div className="space-y-1.5 min-w-0">
-                            {getVotantesDeSubcoord(estructura, sub.ci).map((v) => (
+                            {estructuraFiltrada.votantes
+                              .filter((v) => normalizeCI(v.asignado_por) === subCI)
+                              .map((v) => (
                               <VotanteRow
                                 key={v.ci}
                                 v={v}
@@ -1568,7 +1649,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                                 canAnular={canAnularConfirmacion}
                               />
                             ))}
-                            {getVotantesDeSubcoord(estructura, sub.ci).length === 0 && (
+                            {estructuraFiltrada.votantes.filter((v) => normalizeCI(v.asignado_por) === subCI).length === 0 && (
                               <p className="text-xs text-slate-400 text-center py-2">
                                 Sin votantes asignados.
                               </p>
@@ -1578,10 +1659,17 @@ const Dashboard = ({ currentUser, onLogout }) => {
                       )}
                     </div>
                   );
-                  })}
+                  });
+                  })()}
 
                   {/* Votantes directos del coordinador */}
-                  {getMisVotantes(estructura, currentUser).length > 0 && (
+                  {(() => {
+                    const miCI = normalizeCI(currentUser.ci);
+                    const misVotantesDirectos = estructuraFiltrada.votantes.filter(
+                      (v) => normalizeCI(v.asignado_por) === miCI
+                    );
+                    if (misVotantesDirectos.length === 0) return null;
+                    return (
                     <div className="border border-slate-200 rounded-xl overflow-hidden">
                       <div className="px-4 py-3 bg-slate-50 border-b border-slate-100">
                         <p className="font-semibold text-sm text-slate-700 flex items-center gap-2">
@@ -1590,7 +1678,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                         </p>
                       </div>
                       <div className="p-3 space-y-1.5">
-                        {getMisVotantes(estructura, currentUser).map((v) => (
+                        {misVotantesDirectos.map((v) => (
                           <VotanteRow
                             key={v.ci}
                             v={v}
@@ -1605,9 +1693,12 @@ const Dashboard = ({ currentUser, onLogout }) => {
                         ))}
                       </div>
                     </div>
-                  )}
+                  );
+                  })()}
 
-                  {getMisSubcoordinadores(estructura, currentUser).length === 0 &&
+                  {/* Mensaje de estructura vacía (sin búsqueda) */}
+                  {!normalizeText(searchCI) &&
+                    getMisSubcoordinadores(estructura, currentUser).length === 0 &&
                     getMisVotantes(estructura, currentUser).length === 0 && (
                       <div className="text-center py-10">
                         <Users className="w-10 h-10 text-slate-200 mx-auto mb-2" />
@@ -1622,7 +1713,26 @@ const Dashboard = ({ currentUser, onLogout }) => {
               {/* ====== SUBCOORDINADOR ====== */}
               {!loadingEstructura && currentUser.role === "subcoordinador" && (
                 <div className="space-y-1.5">
-                  {getMisVotantes(estructura, currentUser).map((v) => (
+                  {/* Mensaje de sin resultados de búsqueda */}
+                  {normalizeText(searchCI) && estructuraFiltrada.votantes.length === 0 && (
+                    <div className="text-center py-10">
+                      <Search className="w-10 h-10 text-slate-200 mx-auto mb-2" />
+                      <p className="text-sm text-slate-500">No se encontraron resultados en tu estructura.</p>
+                      <button
+                        onClick={() => setSearchCI("")}
+                        className="mt-3 text-xs text-brand-600 hover:text-brand-700 underline bg-transparent border-0 shadow-none p-0"
+                      >
+                        Limpiar búsqueda
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Votantes filtrados */}
+                  {(() => {
+                    const miCI = normalizeCI(currentUser.ci);
+                    return estructuraFiltrada.votantes
+                      .filter((v) => normalizeCI(v.asignado_por) === miCI)
+                      .map((v) => (
                     <VotanteRow
                       key={v.ci}
                       v={v}
@@ -1634,8 +1744,11 @@ const Dashboard = ({ currentUser, onLogout }) => {
                       canConfirmar={canConfirmarVoto}
                       canAnular={canAnularConfirmacion}
                     />
-                  ))}
-                  {getMisVotantes(estructura, currentUser).length === 0 && (
+                  ));
+                  })()}
+
+                  {/* Mensaje de estructura vacía (sin búsqueda) */}
+                  {!normalizeText(searchCI) && getMisVotantes(estructura, currentUser).length === 0 && (
                     <div className="text-center py-10">
                       <Users className="w-10 h-10 text-slate-200 mx-auto mb-2" />
                       <p className="text-sm text-slate-400">No tiene votantes asignados.</p>
