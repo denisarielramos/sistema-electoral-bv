@@ -21,12 +21,14 @@ import {
   TrendingUp,
   Shield,
   AlertCircle,
+  LayoutGrid,
 } from "lucide-react";
 
 import AddPersonModal from "../AddPersonModal";
 import ModalTelefono from "./ModalTelefono";
 import ModalDireccion from "./ModalDireccion";
 import ConfirmVotoModal from "./ConfirmVotoModal";
+import VistaSeccional from "./VistaSeccional";
 import {
   generateSuperadminPDF,
   generateCoordinadorPDF,
@@ -37,6 +39,7 @@ import { getEstadisticas } from "../services/estadisticasService";
 
 import {
   normalizeCI,
+  normalizeText as normalizeTextHelper,
   getMisSubcoordinadores,
   getVotantesDeSubcoord,
   getMisVotantes,
@@ -313,6 +316,9 @@ const Dashboard = ({ currentUser, onLogout }) => {
   const [isConfirmSubLoading, setIsConfirmSubLoading] = useState(false);
 
   const [loadingEstructura, setLoadingEstructura] = useState(true);
+
+  // Vista Seccional state (superadmin only)
+  const [showVistaSeccional, setShowVistaSeccional] = useState(false);
 
   // Non-blocking toast notification (replaces alert() to prevent scroll jump)
   const [toastMsg, setToastMsg] = useState(null);
@@ -894,10 +900,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
   );
 
   // ======================= BUSCADOR =======================
-  const normalizeText = (v) =>
-    (v ?? "").toString().toLowerCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      .replace(/\s+/g, " ").trim();
+  const normalizeText = (v) => normalizeTextHelper(v);
 
   const personasVisibles = useMemo(() => {
     const role = currentUser?.role;
@@ -938,15 +941,28 @@ const Dashboard = ({ currentUser, onLogout }) => {
     const qRaw = normalizeText(searchCI);
     if (!qRaw) return personasVisibles;
     const tokens = qRaw.split(" ").filter(Boolean);
-    return personasVisibles.filter(({ persona }) => {
+    return personasVisibles.filter(({ tipo, persona }) => {
       const ci = normalizeText(persona?.ci);
       const nombre = normalizeText(persona?.nombre);
       const apellido = normalizeText(persona?.apellido);
       const full1 = `${nombre} ${apellido}`.trim();
       const full2 = `${apellido} ${nombre}`.trim();
+      const telefono = normalizeText(persona?.telefono);
+      const seccional = normalizeText(persona?.seccional);
+      const local = normalizeText(persona?.local_votacion);
+      const mesa = normalizeText(persona?.mesa);
+      const orden = normalizeText(persona?.orden);
+      const direccion = normalizeText(persona?.direccion || persona?.direccion_override);
+      const rolText = normalizeText(
+        tipo === "coordinador" ? "coordinador" :
+        tipo === "subcoordinador" ? "subcoordinador" :
+        "votante"
+      );
       return tokens.every((t) =>
         ci.includes(t) || nombre.includes(t) || apellido.includes(t) ||
-        full1.includes(t) || full2.includes(t)
+        full1.includes(t) || full2.includes(t) || telefono.includes(t) ||
+        seccional.includes(t) || local.includes(t) || mesa.includes(t) ||
+        orden.includes(t) || direccion.includes(t) || rolText.includes(t)
       );
     });
   }, [searchCI, personasVisibles]);
@@ -1131,6 +1147,16 @@ const Dashboard = ({ currentUser, onLogout }) => {
             <FileText className="w-4 h-4" />
             Descargar PDF
           </button>
+
+          {currentUser.role === "superadmin" && (
+            <button
+              onClick={() => setShowVistaSeccional(true)}
+              className="inline-flex items-center gap-2 border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 px-4 h-10 rounded-xl text-sm font-medium transition-colors w-full sm:w-auto shadow-sm"
+            >
+              <LayoutGrid className="w-4 h-4" />
+              Vista por Seccional
+            </button>
+          )}
         </section>
 
         {/* =========== BUSCADOR =========== */}
@@ -1148,7 +1174,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                 id="searchCI"
                 value={searchCI}
                 onChange={(e) => setSearchCI(e.target.value)}
-                placeholder="CI, nombre, apellido o combinación..."
+                placeholder="CI, nombre, apellido, teléfono, seccional, local, mesa u orden..."
                 className="w-full pl-9 pr-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent bg-slate-50"
               />
               {searchCI && (
@@ -1681,6 +1707,13 @@ const Dashboard = ({ currentUser, onLogout }) => {
             {toastMsg}
           </div>
         </div>
+      )}
+
+      {/* Vista Seccional Modal (superadmin only) */}
+      {showVistaSeccional && currentUser.role === "superadmin" && (
+        <VistaSeccional
+          onClose={() => setShowVistaSeccional(false)}
+        />
       )}
     </div>
   );

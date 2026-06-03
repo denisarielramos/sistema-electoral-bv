@@ -4,6 +4,22 @@
 export const normalizeCI = (ci) =>
   String(ci || "").replace(/\D/g, "");
 
+// Formatear CI con separador de miles (ej: 4321080 -> 4.321.080)
+export const formatCI = (ci) => {
+  const num = parseInt(normalizeCI(ci), 10);
+  if (isNaN(num)) return ci || "";
+  return num.toLocaleString("es-PY");
+};
+
+// Normaliza texto para búsqueda (sin tildes, minúsculas)
+export const normalizeText = (text) =>
+  String(text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
 // ======================= SUBCOORDINADORES DEL COORD =======================
 export const getMisSubcoordinadores = (estructura, currentUser) => {
   if (!currentUser || currentUser.role !== "coordinador") return [];
