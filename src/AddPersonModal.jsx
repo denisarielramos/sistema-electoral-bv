@@ -1,5 +1,10 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { Search, X, UserPlus, ChevronLeft, ChevronRight } from "lucide-react";
+
+// Normalize text once, outside component
+const normalize = (text) =>
+  (text || "").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
 const AddPersonModal = ({ show, onClose, tipo, onAdd, disponibles }) => {
   const [searchTerm, setSearchTerm] = useState("");
@@ -11,31 +16,38 @@ const AddPersonModal = ({ show, onClose, tipo, onAdd, disponibles }) => {
 
   useEffect(() => { setPage(1); }, [searchTerm]);
 
+  // Pre-compute searchable text for each person (memoized)
+  const disponiblesWithSearchText = useMemo(() => {
+    return (disponibles || []).map((p) => ({
+      ...p,
+      _searchText: normalize(`${p.ci ?? ""} ${p.nombre ?? ""} ${p.apellido ?? ""}`),
+    }));
+  }, [disponibles]);
+
+  // Filter only when term has 2+ chars (memoized)
+  const filtered = useMemo(() => {
+    const term = searchTerm.trim();
+    if (term.length < 2) return [];
+    
+    const normalizedTerm = normalize(term);
+    const words = normalizedTerm.split(" ").filter(Boolean);
+    
+    const results = disponiblesWithSearchText.filter((p) =>
+      words.every((w) => p._searchText.includes(w))
+    );
+    
+    // Simple sort: exact CI match first, then alphabetical
+    const exactCI = term;
+    return results.sort((a, b) => {
+      const exactA = a.ci?.toString() === exactCI;
+      const exactB = b.ci?.toString() === exactCI;
+      if (exactA && !exactB) return -1;
+      if (!exactA && exactB) return 1;
+      return (a.nombre || "").localeCompare(b.nombre || "");
+    });
+  }, [searchTerm, disponiblesWithSearchText]);
+
   if (!show) return null;
-
-  const term = searchTerm.trim();
-
-  const normalize = (text) =>
-    (text || "").toLowerCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-
-  const filtered = term
-    ? disponibles
-        .filter((p) => {
-          const fullName = `${p.nombre ?? ""} ${p.apellido ?? ""}`;
-          const fullNameNorm = normalize(fullName);
-          const ciTxt = (p.ci ?? "").toString().toLowerCase();
-          const words = normalize(term).split(" ").filter(Boolean);
-          return words.every((w) => ciTxt.includes(w) || fullNameNorm.includes(w));
-        })
-        .sort((a, b) => {
-          const exactA = a.ci?.toString() === searchTerm;
-          const exactB = b.ci?.toString() === searchTerm;
-          if (exactA && !exactB) return -1;
-          if (!exactA && exactB) return 1;
-          return (a.nombre || "").localeCompare(b.nombre || "");
-        })
-    : [];
 
   const pageSize = 20;
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -101,10 +113,10 @@ const AddPersonModal = ({ show, onClose, tipo, onAdd, disponibles }) => {
 
         {/* List */}
         <div className="flex-1 overflow-y-auto px-5 py-3 space-y-1.5">
-          {!searchTerm ? (
+          {searchTerm.trim().length < 2 ? (
             <div className="text-center py-10">
               <Search className="w-8 h-8 text-slate-200 mx-auto mb-2" />
-              <p className="text-sm text-slate-400">Escriba para buscar personas del padrón.</p>
+              <p className="text-sm text-slate-400">Escriba al menos 2 caracteres para buscar.</p>
             </div>
           ) : pageData.length === 0 ? (
             <div className="text-center py-10">

@@ -722,8 +722,8 @@ const Dashboard = ({ currentUser, onLogout }) => {
       }]).select();
       if (error) { console.error("Error creando coordinador:", error); alert(error.message || "Error creando coordinador"); return; }
 
-      // Merge with padron data and add to local state
-      const padronEntry = padron.find((p) => normalizeCI(p.ci) === ci) || {};
+      // Merge with padron data using O(1) map lookup
+      const padronEntry = padronMap.get(ci) || {};
       const newCoord = { ...padronEntry, ...(inserted?.[0] || { ci, login_code: accessCode, asignado_por_nombre: "Superadmin" }), ci };
       setEstructura((prev) => ({
         ...prev,
@@ -748,8 +748,8 @@ const Dashboard = ({ currentUser, onLogout }) => {
       const { data: inserted, error } = await supabase.from("subcoordinadores").insert([insertPayload]).select();
       if (error) { console.error("Error creando subcoordinador:", error); alert(error.message || "Error creando subcoordinador"); return; }
 
-      // Merge with padron data and add to local state
-      const padronEntry = padron.find((p) => normalizeCI(p.ci) === ci) || {};
+      // Merge with padron data using O(1) map lookup
+      const padronEntry = padronMap.get(ci) || {};
       const newSub = { ...padronEntry, ...(inserted?.[0] || insertPayload), ci };
       setEstructura((prev) => ({
         ...prev,
@@ -783,8 +783,8 @@ const Dashboard = ({ currentUser, onLogout }) => {
       const { data: inserted, error } = await supabase.from("votantes").insert([insertPayload]).select();
       if (error) { console.error("Error creando votante:", error); alert(error.message || "Error creando votante"); return; }
 
-      // Merge with padron data and add to local state
-      const padronEntry = padron.find((p) => normalizeCI(p.ci) === ci) || {};
+      // Merge with padron data using O(1) map lookup
+      const padronEntry = padronMap.get(ci) || {};
       const newVotante = { ...padronEntry, ...(inserted?.[0] || insertPayload), ci };
       setEstructura((prev) => ({
         ...prev,
@@ -852,45 +852,61 @@ const Dashboard = ({ currentUser, onLogout }) => {
     [estructura, currentUser]
   );
 
-  // ======================= PER-PERSON VOTE COUNTS =======================
-  // Coordinador inline counter: 1 (self auto) + subs + voters
-  // Subcoordinador inline counter: 1 (self auto) + voters
-  const voteCountsByCoord = useMemo(() => {
-    const map = {};
-    (estructura.coordinadores || []).forEach((coord) => {
-      const ci = normalizeCI(coord.ci);
-      const subs = (estructura.subcoordinadores || []).filter(
-        (s) => normalizeCI(s.coordinador_ci) === ci
-      );
-      const voters = (estructura.votantes || []).filter(
-        (v) => normalizeCI(v.coordinador_ci) === ci
-      );
-      const subsConfirmed = subs.filter((s) => s.confirmado === true).length;
-      const votersConfirmed = voters.filter((v) => v.voto_confirmado === true).length;
-      // +1 for coord self (always auto-confirmed)
-      map[ci] = {
-        total: 1 + subs.length + voters.length,
-        confirmed: 1 + subsConfirmed + votersConfirmed,
-      };
-    });
+  // ======================= PADRON MAP (O(1) lookup) =======================
+  const padronMap = useMemo(() => {
+    const map = new Map();
+    (padron || []).forEach((p) => map.set(normalizeCI(p.ci), p));
     return map;
-  }, [estructura]);
+  }, [padron]);
 
-  const voteCountsBySub = useMemo(() => {
-    const map = {};
-    (estructura.subcoordinadores || []).forEach((sub) => {
-      const ci = normalizeCI(sub.ci);
-      const voters = (estructura.votantes || []).filter(
-        (v) => normalizeCI(v.asignado_por) === ci
-      );
-      const votersConfirmed = voters.filter((v) => v.voto_confirmado === true).length;
-      // +1 for sub self (always auto-confirmed)
-      map[ci] = {
-        total: 1 + voters.length,
-        confirmed: 1 + votersConfirmed,
-      };
+  // ======================= PER-PERSON VOTE COUNTS (single-pass) =======================
+  // Optimized: iterate votantes once to build counts, then iterate subs once
+  const { voteCountsByCoord, voteCountsBySub } = useMemo(() => {
+    const coordMap = {};
+    const subMap = {};
+
+    // Initialize coord counts with +1 for self (auto-confirmed)
+    (estructura.coordinadores || []).forEach((coord) => {
+      coordMap[normalizeCI(coord.ci)] = { total: 1, confirmed: 1 };
     });
-    return map;
+
+    // Initialize sub counts with +1 for self (auto-confirmed)
+    (estructura.subcoordinadores || []).forEach((sub) => {
+      subMap[normalizeCI(sub.ci)] = { total: 1, confirmed: 1 };
+    });
+
+    // Single pass over votantes
+    (estructura.votantes || []).forEach((v) => {
+      const coordCI = normalizeCI(v.coordinador_ci);
+      const asignadoPor = normalizeCI(v.asignado_por);
+      const isConfirmed = v.voto_confirmado === true;
+
+      // Add to coord total
+      if (coordMap[coordCI]) {
+        coordMap[coordCI].total += 1;
+        if (isConfirmed) coordMap[coordCI].confirmed += 1;
+      }
+
+      // If assigned by a sub, add to sub counts
+      if (subMap[asignadoPor]) {
+        subMap[asignadoPor].total += 1;
+        if (isConfirmed) subMap[asignadoPor].confirmed += 1;
+      }
+    });
+
+    // Single pass over subs to add their counts to coord
+    (estructura.subcoordinadores || []).forEach((sub) => {
+      const subCI = normalizeCI(sub.ci);
+      const coordCI = normalizeCI(sub.coordinador_ci);
+      const isSubConfirmed = sub.confirmado === true;
+
+      if (coordMap[coordCI]) {
+        coordMap[coordCI].total += 1;
+        if (isSubConfirmed) coordMap[coordCI].confirmed += 1;
+      }
+    });
+
+    return { voteCountsByCoord: coordMap, voteCountsBySub: subMap };
   }, [estructura]);
 
   // ======================= DISPONIBLES =======================
