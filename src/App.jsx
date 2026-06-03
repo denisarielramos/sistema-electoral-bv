@@ -3,8 +3,8 @@
 // Dashboard maneja TODO lo demás.
 
 import React, { useEffect, useState } from "react";
-import { supabase } from "./supabaseClient";
-import { ShieldCheck, Eye, EyeOff } from "lucide-react";
+import { supabase, isSupabaseConfigured } from "./supabaseClient";
+import { ShieldCheck, Eye, EyeOff, AlertTriangle } from "lucide-react";
 import Dashboard from "./components/Dashboard";
 import { normalizeCI } from "./utils/estructuraHelpers";
 
@@ -25,6 +25,42 @@ const SUPERADMINS = [
 ];
 
 const App = () => {
+  // ======================= VALIDACIÓN DE CONFIGURACIÓN =======================
+  // Si faltan variables de entorno de Supabase, mostrar mensaje claro
+  if (!isSupabaseConfigured) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center px-4 py-8">
+        <div className="w-full max-w-md">
+          <div className="bg-white rounded-2xl shadow-card-md overflow-hidden">
+            <div className="bg-amber-500 px-8 py-6 text-white text-center">
+              <div className="inline-flex items-center justify-center w-14 h-14 bg-white/10 rounded-full mb-3">
+                <AlertTriangle className="w-7 h-7 text-white" />
+              </div>
+              <h1 className="text-2xl font-bold tracking-tight">
+                Configuración Requerida
+              </h1>
+            </div>
+            <div className="px-8 py-7 space-y-4">
+              <p className="text-slate-700 text-sm">
+                La aplicación no puede conectarse a la base de datos porque faltan las variables de entorno de Supabase.
+              </p>
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs text-slate-600 space-y-2">
+                <p className="font-semibold text-slate-700">Variables requeridas:</p>
+                <ul className="list-disc ml-4 space-y-1">
+                  <li><code className="bg-slate-200 px-1 rounded">VITE_SUPABASE_URL</code></li>
+                  <li><code className="bg-slate-200 px-1 rounded">VITE_SUPABASE_ANON_KEY</code></li>
+                </ul>
+              </div>
+              <p className="text-slate-500 text-xs">
+                Contacte al administrador para obtener las credenciales correctas.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ======================= SESIÓN =======================
   const [currentUser, setCurrentUser] = useState(null);
   const [loginID, setLoginID] = useState("");
