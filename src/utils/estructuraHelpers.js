@@ -52,33 +52,43 @@ export const getVotantesDirectosCoord = (estructura, coordCi) => {
   );
 };
 
-// ======================= PERSONAS DISPONIBLES =======================
+// ======================= PERSONAS DISPONIBLES (Optimized with Sets) =======================
 export const getPersonasDisponibles = (padron, estructura) => {
+  // Build Sets for O(1) lookup instead of O(n) find()
+  const coordinadoresSet = new Set(
+    (estructura.coordinadores || []).map((c) => normalizeCI(c.ci))
+  );
+  const subcoordinadoresMap = new Map();
+  (estructura.subcoordinadores || []).forEach((s) => {
+    subcoordinadoresMap.set(normalizeCI(s.ci), s);
+  });
+  const votantesMap = new Map();
+  (estructura.votantes || []).forEach((v) => {
+    votantesMap.set(normalizeCI(v.ci), v);
+  });
+
   return padron.map((p) => {
     const ci = normalizeCI(p.ci);
 
-    const coord = estructura.coordinadores.find(
-      (c) => normalizeCI(c.ci) === ci
-    );
-    const sub = estructura.subcoordinadores.find(
-      (s) => normalizeCI(s.ci) === ci
-    );
-    const vot = estructura.votantes.find(
-      (v) => normalizeCI(v.ci) === ci
-    );
-
     let rol = null;
-    if (coord) rol = "coordinador";
-    else if (sub) rol = "subcoordinador";
-    else if (vot) rol = "votante";
+    let asignadoPorNombre = "";
+
+    if (coordinadoresSet.has(ci)) {
+      rol = "coordinador";
+    } else if (subcoordinadoresMap.has(ci)) {
+      rol = "subcoordinador";
+      asignadoPorNombre = subcoordinadoresMap.get(ci)?.asignado_por_nombre || "";
+    } else if (votantesMap.has(ci)) {
+      rol = "votante";
+      asignadoPorNombre = votantesMap.get(ci)?.asignado_por_nombre || "";
+    }
 
     return {
       ...p,
       ci,
       asignado: rol !== null,
       asignadoRol: rol,
-      asignadoPorNombre:
-        sub?.asignado_por_nombre || vot?.asignado_por_nombre || "",
+      asignadoPorNombre,
     };
   });
 };
