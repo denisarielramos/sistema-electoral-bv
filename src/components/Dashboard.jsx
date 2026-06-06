@@ -41,9 +41,7 @@ import {
   normalizeCI,
   normalizeText as normalizeTextHelper,
   getMisSubcoordinadores,
-  getVotantesDeSubcoord,
   getMisVotantes,
-  getPersonasDisponibles,
 } from "../utils/estructuraHelpers";
 
 // ======================= SMALL REUSABLE COMPONENTS =======================
@@ -345,92 +343,79 @@ const Dashboard = ({ currentUser, onLogout }) => {
     setExpandedCoords((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
 
-  // ======================= CARGAR PADRÓN =======================
-  const cargarPadronCompleto = async () => {
-    try {
-      const { count, error: countError } = await supabase
-        .from("padron")
-        .select("ci", { count: "exact", head: true });
-
-      if (countError) { console.error("Error count padrón:", countError); return []; }
-      if (!count || count <= 0) { setPadron([]); return []; }
-
-      const { data, error } = await supabase
-        .from("padron")
-        .select("*")
-        .range(0, count - 1);
-
-      if (error) { console.error("Error cargando padrón:", error); return []; }
-      const result = data || [];
-      setPadron(result);
-      return result;
-    } catch (e) {
-      console.error("Error cargando padrón:", e);
-      return [];
-    }
-  };
-
   // ======================= RECARGAR ESTRUCTURA =======================
-  // Accepts an optional padronData arg to avoid stale closure over padron state.
-  const recargarEstructura = useCallback(async (padronDataOverride) => {
+  // Loads only the assigned people (3 small tables), then fetches ONLY the
+  // padron rows for those CIs via the obtener_padron_por_cis RPC.
+  // It never loads the full padron table into memory.
+  const recargarEstructura = useCallback(async () => {
     try {
       setLoadingEstructura(true);
 
-      let padronData = padronDataOverride || padron;
-      if (!padronData || padronData.length === 0) {
-        const { data: p } = await supabase.from("padron").select("*");
-        padronData = p || [];
-        setPadron(padronData);
+      const [
+        { data: coordsRaw, error: coordsErr },
+        { data: subsRaw, error: subsErr },
+        { data: votosRaw, error: votosErr },
+      ] = await Promise.all([
+        supabase.from("coordinadores").select("*"),
+        supabase.from("subcoordinadores").select("*"),
+        supabase.from("votantes").select("*"),
+      ]);
+
+      if (coordsErr) console.error("Error coords:", coordsErr);
+      if (subsErr) console.error("Error subs:", subsErr);
+      if (votosErr) console.error("Error votos:", votosErr);
+
+      const coords = coordsRaw || [];
+      const subs = subsRaw || [];
+      const votos = votosRaw || [];
+
+      // Collect unique CIs from the three tables.
+      const cisSet = new Set();
+      coords.forEach((c) => cisSet.add(normalizeCI(c.ci)));
+      subs.forEach((s) => cisSet.add(normalizeCI(s.ci)));
+      votos.forEach((v) => cisSet.add(normalizeCI(v.ci)));
+      const cisArray = Array.from(cisSet);
+
+      // Fetch ONLY the padron rows we actually need.
+      let padronRows = [];
+      if (cisArray.length > 0) {
+        const { data, error } = await supabase.rpc("obtener_padron_por_cis", {
+          cis_input: cisArray,
+        });
+        if (error) console.error("Error obtener_padron_por_cis:", error);
+        padronRows = data || [];
       }
 
       const padronMap = new Map(
-        (padronData || []).map((p) => [normalizeCI(p.ci), p])
+        padronRows.map((p) => [normalizeCI(p.ci), p])
       );
 
-      const { data: coordsRaw, error: coordsErr } = await supabase
-        .from("coordinadores").select("*");
-      if (coordsErr) console.error("Error coords:", coordsErr);
-
-      const { data: subsRaw, error: subsErr } = await supabase
-        .from("subcoordinadores").select("*");
-      if (subsErr) console.error("Error subs:", subsErr);
-
-      const { data: votosRaw, error: votosErr } = await supabase
-        .from("votantes").select("*");
-      if (votosErr) console.error("Error votos:", votosErr);
+      // Keep padron state limited to assigned people only.
+      setPadron(padronRows);
 
       const mergePadron = (arr) =>
-        (arr || []).map((x) => {
+        arr.map((x) => {
           const ci = normalizeCI(x.ci);
           const p = padronMap.get(ci);
           return { ...(p || {}), ...x, ci };
         });
 
       setEstructura({
-        coordinadores: mergePadron(coordsRaw),
-        subcoordinadores: mergePadron(subsRaw),
-        votantes: mergePadron(votosRaw),
+        coordinadores: mergePadron(coords),
+        subcoordinadores: mergePadron(subs),
+        votantes: mergePadron(votos),
       });
     } catch (e) {
       console.error("Error recargando estructura:", e);
     } finally {
       setLoadingEstructura(false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sequential init: load padron first, then pass it to recargarEstructura.
+  // Init: load structure (small tables + targeted padron fetch).
   useEffect(() => {
     if (!currentUser) return;
-    let cancelled = false;
-    const init = async () => {
-      const padronData = await cargarPadronCompleto();
-      if (!cancelled) {
-        await recargarEstructura(padronData);
-      }
-    };
-    init();
-    return () => { cancelled = true; };
+    recargarEstructura();
   }, [currentUser, recargarEstructura]);
 
   // ======================= RBAC =======================
@@ -722,9 +707,8 @@ const Dashboard = ({ currentUser, onLogout }) => {
       }]).select();
       if (error) { console.error("Error creando coordinador:", error); alert(error.message || "Error creando coordinador"); return; }
 
-      // Merge with padron data using O(1) map lookup
-      const padronEntry = padronMap.get(ci) || {};
-      const newCoord = { ...padronEntry, ...(inserted?.[0] || { ci, login_code: accessCode, asignado_por_nombre: "Superadmin" }), ci };
+      // Use the modal result (from buscar_padron) as padron data — no global lookup needed.
+      const newCoord = { ...persona, ...(inserted?.[0] || { ci, login_code: accessCode, asignado_por_nombre: "Superadmin" }), ci };
       setEstructura((prev) => ({
         ...prev,
         coordinadores: [...prev.coordinadores, newCoord],
@@ -748,9 +732,8 @@ const Dashboard = ({ currentUser, onLogout }) => {
       const { data: inserted, error } = await supabase.from("subcoordinadores").insert([insertPayload]).select();
       if (error) { console.error("Error creando subcoordinador:", error); alert(error.message || "Error creando subcoordinador"); return; }
 
-      // Merge with padron data using O(1) map lookup
-      const padronEntry = padronMap.get(ci) || {};
-      const newSub = { ...padronEntry, ...(inserted?.[0] || insertPayload), ci };
+      // Use the modal result (from buscar_padron) as padron data.
+      const newSub = { ...persona, ...(inserted?.[0] || insertPayload), ci };
       setEstructura((prev) => ({
         ...prev,
         subcoordinadores: [...prev.subcoordinadores, newSub],
@@ -783,9 +766,8 @@ const Dashboard = ({ currentUser, onLogout }) => {
       const { data: inserted, error } = await supabase.from("votantes").insert([insertPayload]).select();
       if (error) { console.error("Error creando votante:", error); alert(error.message || "Error creando votante"); return; }
 
-      // Merge with padron data using O(1) map lookup
-      const padronEntry = padronMap.get(ci) || {};
-      const newVotante = { ...padronEntry, ...(inserted?.[0] || insertPayload), ci };
+      // Use the modal result (from buscar_padron) as padron data.
+      const newVotante = { ...persona, ...(inserted?.[0] || insertPayload), ci };
       setEstructura((prev) => ({
         ...prev,
         votantes: [...prev.votantes, newVotante],
@@ -852,12 +834,23 @@ const Dashboard = ({ currentUser, onLogout }) => {
     [estructura, currentUser]
   );
 
-  // ======================= PADRON MAP (O(1) lookup) =======================
-  const padronMap = useMemo(() => {
+  // ======================= ASIGNADOS MAP (lightweight) =======================
+  // Maps normalizeCI(ci) -> { rol, asignadoPorNombre } for everyone already in
+  // the structure. Passed to AddPersonModal so search results can be marked as
+  // already-assigned without loading the full padron.
+  const asignadosMap = useMemo(() => {
     const map = new Map();
-    (padron || []).forEach((p) => map.set(normalizeCI(p.ci), p));
+    (estructura.coordinadores || []).forEach((c) => {
+      map.set(normalizeCI(c.ci), { rol: "coordinador", asignadoPorNombre: c.asignado_por_nombre || "Superadmin" });
+    });
+    (estructura.subcoordinadores || []).forEach((s) => {
+      map.set(normalizeCI(s.ci), { rol: "subcoordinador", asignadoPorNombre: s.asignado_por_nombre || "" });
+    });
+    (estructura.votantes || []).forEach((v) => {
+      map.set(normalizeCI(v.ci), { rol: "votante", asignadoPorNombre: v.asignado_por_nombre || "" });
+    });
     return map;
-  }, [padron]);
+  }, [estructura]);
 
   // ======================= PER-PERSON VOTE COUNTS (single-pass) =======================
   // Optimized: iterate votantes once to build counts, then iterate subs once
@@ -908,12 +901,6 @@ const Dashboard = ({ currentUser, onLogout }) => {
 
     return { voteCountsByCoord: coordMap, voteCountsBySub: subMap };
   }, [estructura]);
-
-  // ======================= DISPONIBLES =======================
-  const disponibles = useMemo(
-    () => getPersonasDisponibles(padron, estructura),
-    [padron, estructura]
-  );
 
   // ======================= BUSCADOR =======================
   const normalizeText = (v) => normalizeTextHelper(v);
@@ -1117,6 +1104,46 @@ const Dashboard = ({ currentUser, onLogout }) => {
     if (!normalizeText(searchCI)) return 0;
     return estructuraFiltrada.totalMatches;
   }, [searchCI, estructuraFiltrada]);
+
+  // ======================= RENDER MAPS (avoid O(n*m) filters in JSX) =======================
+  // Built from estructuraFiltrada (which equals the full estructura when there
+  // is no active search) so the JSX can do O(1) lookups instead of repeated
+  // .filter() inside each coordinator/subcoordinator branch.
+  const {
+    subcoordinadoresByCoordinador,
+    votantesByAsignadoPor,
+  } = useMemo(() => {
+    const subsByCoord = new Map();
+    const votsByAsignado = new Map();
+
+    (estructuraFiltrada.subcoordinadores || []).forEach((s) => {
+      const coordCI = normalizeCI(s.coordinador_ci);
+      if (!subsByCoord.has(coordCI)) subsByCoord.set(coordCI, []);
+      subsByCoord.get(coordCI).push(s);
+    });
+
+    (estructuraFiltrada.votantes || []).forEach((v) => {
+      const asignadoCI = normalizeCI(v.asignado_por);
+      if (!votsByAsignado.has(asignadoCI)) votsByAsignado.set(asignadoCI, []);
+      votsByAsignado.get(asignadoCI).push(v);
+    });
+
+    return {
+      subcoordinadoresByCoordinador: subsByCoord,
+      votantesByAsignadoPor: votsByAsignado,
+    };
+  }, [estructuraFiltrada]);
+
+  // Small helpers for O(1) lookups in JSX (return stable empty array default).
+  const EMPTY = useMemo(() => [], []);
+  const getSubsDeCoord = useCallback(
+    (coordCI) => subcoordinadoresByCoordinador.get(normalizeCI(coordCI)) || EMPTY,
+    [subcoordinadoresByCoordinador, EMPTY]
+  );
+  const getVotantesDeAsignado = useCallback(
+    (asignadoCI) => votantesByAsignadoPor.get(normalizeCI(asignadoCI)) || EMPTY,
+    [votantesByAsignadoPor, EMPTY]
+  );
 
   // ======================= PDF =======================
   const descargarPDF = async () => {
@@ -1433,8 +1460,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                       {expandedCoords[coordCI] && (
                         <div className="border-t border-slate-100 bg-slate-50/50 px-4 pb-4 pt-3 overflow-x-auto animate-fade-in">
                           <div className="space-y-2 min-w-0">
-                            {estructuraFiltrada.subcoordinadores
-                              .filter((s) => normalizeCI(s.coordinador_ci) === coordCI)
+                            {getSubsDeCoord(coordCI)
                               .map((sub) => {
                                 const subCI = normalizeCI(sub.ci);
                                 const subCounts = voteCountsBySub[subCI] ?? { confirmed: 0, total: 0 };
@@ -1486,9 +1512,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                                   {expandedCoords[subCI] && (
                                     <div className="border-t border-slate-100 bg-slate-50 px-3 pb-3 pt-2 overflow-x-auto animate-fade-in">
                                       <div className="space-y-1.5 min-w-0">
-                                        {estructuraFiltrada.votantes
-                                          .filter((v) => normalizeCI(v.asignado_por) === subCI)
-                                          .map((v) => (
+                                        {getVotantesDeAsignado(subCI).map((v) => (
                                           <VotanteRow
                                             key={v.ci}
                                             v={v}
@@ -1501,7 +1525,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                                             canAnular={canAnularConfirmacion}
                                           />
                                         ))}
-                                        {estructuraFiltrada.votantes.filter((v) => normalizeCI(v.asignado_por) === subCI).length === 0 && (
+                                        {getVotantesDeAsignado(subCI).length === 0 && (
                                           <p className="text-xs text-slate-400 py-2 text-center">
                                             Sin votantes asignados.
                                           </p>
@@ -1513,9 +1537,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                               );
                               })}
 
-                            {estructuraFiltrada.subcoordinadores.filter(
-                              (s) => normalizeCI(s.coordinador_ci) === coordCI
-                            ).length === 0 && !normalizeText(searchCI) && (
+                            {getSubsDeCoord(coordCI).length === 0 && !normalizeText(searchCI) && (
                               <p className="text-xs text-slate-400 text-center py-2">
                                 Sin subcoordinadores asignados.
                               </p>
@@ -1523,9 +1545,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
 
                             {/* Direct voters of this coordinator */}
                             {(() => {
-                              const directVoters = estructuraFiltrada.votantes.filter(
-                                (v) => normalizeCI(v.asignado_por) === coordCI
-                              );
+                              const directVoters = getVotantesDeAsignado(coordCI);
                               if (directVoters.length === 0) return null;
                               return (
                                 <div className="border border-slate-200 rounded-lg bg-white overflow-hidden">
@@ -1583,9 +1603,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                   {/* Subcoordinadores filtrados */}
                   {(() => {
                     const miCI = normalizeCI(currentUser.ci);
-                    const misSubs = estructuraFiltrada.subcoordinadores.filter(
-                      (s) => normalizeCI(s.coordinador_ci) === miCI
-                    );
+                    const misSubs = getSubsDeCoord(miCI);
                     return misSubs.map((sub) => {
                     const subCI = normalizeCI(sub.ci);
                     const subCounts = voteCountsBySub[subCI] ?? { confirmed: 0, total: 0 };
@@ -1650,9 +1668,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                             Votantes asignados
                           </p>
                           <div className="space-y-1.5 min-w-0">
-                            {estructuraFiltrada.votantes
-                              .filter((v) => normalizeCI(v.asignado_por) === subCI)
-                              .map((v) => (
+                            {getVotantesDeAsignado(subCI).map((v) => (
                               <VotanteRow
                                 key={v.ci}
                                 v={v}
@@ -1665,7 +1681,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                                 canAnular={canAnularConfirmacion}
                               />
                             ))}
-                            {estructuraFiltrada.votantes.filter((v) => normalizeCI(v.asignado_por) === subCI).length === 0 && (
+                            {getVotantesDeAsignado(subCI).length === 0 && (
                               <p className="text-xs text-slate-400 text-center py-2">
                                 Sin votantes asignados.
                               </p>
@@ -1681,9 +1697,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                   {/* Votantes directos del coordinador */}
                   {(() => {
                     const miCI = normalizeCI(currentUser.ci);
-                    const misVotantesDirectos = estructuraFiltrada.votantes.filter(
-                      (v) => normalizeCI(v.asignado_por) === miCI
-                    );
+                    const misVotantesDirectos = getVotantesDeAsignado(miCI);
                     if (misVotantesDirectos.length === 0) return null;
                     return (
                     <div className="border border-slate-200 rounded-xl overflow-hidden">
@@ -1746,9 +1760,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
                   {/* Votantes filtrados */}
                   {(() => {
                     const miCI = normalizeCI(currentUser.ci);
-                    return estructuraFiltrada.votantes
-                      .filter((v) => normalizeCI(v.asignado_por) === miCI)
-                      .map((v) => (
+                    return getVotantesDeAsignado(miCI).map((v) => (
                     <VotanteRow
                       key={v.ci}
                       v={v}
@@ -1802,7 +1814,7 @@ const Dashboard = ({ currentUser, onLogout }) => {
         onClose={() => setShowAddModal(false)}
         tipo={modalType}
         onAdd={handleAgregarPersona}
-        disponibles={disponibles}
+        asignadosMap={asignadosMap}
       />
 
       <ConfirmVotoModal

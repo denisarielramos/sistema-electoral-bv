@@ -1,63 +1,93 @@
-import React, { useState, useEffect, useMemo } from "react";
-import { Search, X, UserPlus, ChevronLeft, ChevronRight } from "lucide-react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import { Search, X, UserPlus, Loader2 } from "lucide-react";
+import { supabase } from "./supabaseClient";
+import { normalizeCI } from "./utils/estructuraHelpers";
 
-// Normalize text once, outside component
-const normalize = (text) =>
-  (text || "").toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+const ROL_LABEL = {
+  coordinador: "Coordinador",
+  subcoordinador: "Subcoordinador",
+  votante: "Votante",
+};
 
-const AddPersonModal = ({ show, onClose, tipo, onAdd, disponibles }) => {
+const AddPersonModal = ({ show, onClose, tipo, onAdd, asignadosMap }) => {
   const [searchTerm, setSearchTerm] = useState("");
-  const [page, setPage] = useState(1);
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const debounceRef = useRef(null);
+  const requestIdRef = useRef(0);
 
+  // Reset when modal closes
   useEffect(() => {
-    if (!show) { setSearchTerm(""); setPage(1); }
+    if (!show) {
+      setSearchTerm("");
+      setResults([]);
+      setLoading(false);
+    }
   }, [show]);
 
-  useEffect(() => { setPage(1); }, [searchTerm]);
-
-  // Pre-compute searchable text for each person (memoized)
-  const disponiblesWithSearchText = useMemo(() => {
-    return (disponibles || []).map((p) => ({
-      ...p,
-      _searchText: normalize(`${p.ci ?? ""} ${p.nombre ?? ""} ${p.apellido ?? ""}`),
-    }));
-  }, [disponibles]);
-
-  // Filter only when term has 2+ chars (memoized)
-  const filtered = useMemo(() => {
+  // Debounced server search via buscar_padron RPC (only when 2+ chars)
+  useEffect(() => {
+    if (!show) return;
     const term = searchTerm.trim();
-    if (term.length < 2) return [];
-    
-    const normalizedTerm = normalize(term);
-    const words = normalizedTerm.split(" ").filter(Boolean);
-    
-    const results = disponiblesWithSearchText.filter((p) =>
-      words.every((w) => p._searchText.includes(w))
-    );
-    
-    // Simple sort: exact CI match first, then alphabetical
-    const exactCI = term;
-    return results.sort((a, b) => {
-      const exactA = a.ci?.toString() === exactCI;
-      const exactB = b.ci?.toString() === exactCI;
-      if (exactA && !exactB) return -1;
-      if (!exactA && exactB) return 1;
-      return (a.nombre || "").localeCompare(b.nombre || "");
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (term.length < 2) {
+      setResults([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    debounceRef.current = setTimeout(async () => {
+      const reqId = ++requestIdRef.current;
+      try {
+        const { data, error } = await supabase.rpc("buscar_padron", {
+          termino_input: term,
+        });
+        // Ignore stale responses
+        if (reqId !== requestIdRef.current) return;
+        if (error) {
+          console.error("Error buscar_padron:", error);
+          setResults([]);
+        } else {
+          setResults(data || []);
+        }
+      } catch (e) {
+        if (reqId !== requestIdRef.current) return;
+        console.error("Error buscar_padron:", e);
+        setResults([]);
+      } finally {
+        if (reqId === requestIdRef.current) setLoading(false);
+      }
+    }, 400);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [searchTerm, show]);
+
+  // Mark each result as assigned/free using the lightweight asignadosMap
+  const decoratedResults = useMemo(() => {
+    return (results || []).map((p) => {
+      const info = asignadosMap?.get(normalizeCI(p.ci));
+      return {
+        ...p,
+        asignado: !!info,
+        asignadoRol: info?.rol || null,
+        asignadoPorNombre: info?.asignadoPorNombre || "",
+      };
     });
-  }, [searchTerm, disponiblesWithSearchText]);
+  }, [results, asignadosMap]);
 
   if (!show) return null;
-
-  const pageSize = 20;
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const startIdx = (page - 1) * pageSize;
-  const pageData = filtered.slice(startIdx, startIdx + pageSize);
 
   const titulo =
     tipo === "coordinador" ? "Agregar Coordinador"
     : tipo === "subcoordinador" ? "Agregar Subcoordinador"
     : "Agregar Votante";
+
+  const termTooShort = searchTerm.trim().length < 2;
 
   return (
     <div
@@ -95,42 +125,46 @@ const AddPersonModal = ({ show, onClose, tipo, onAdd, disponibles }) => {
               className="w-full pl-9 pr-9 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent bg-slate-50"
               autoFocus
             />
-            {searchTerm && (
+            {loading ? (
+              <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-brand-500 animate-spin" />
+            ) : searchTerm ? (
               <button
                 onClick={() => setSearchTerm("")}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0 bg-transparent border-0 shadow-none"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
-            )}
+            ) : null}
           </div>
-          {searchTerm && (
+          {!termTooShort && !loading && (
             <p className="text-xs text-slate-500 mt-1.5">
-              {filtered.length} resultado{filtered.length !== 1 ? "s" : ""}
+              {decoratedResults.length} resultado{decoratedResults.length !== 1 ? "s" : ""}
             </p>
           )}
         </div>
 
         {/* List */}
         <div className="flex-1 overflow-y-auto px-5 py-3 space-y-1.5">
-          {searchTerm.trim().length < 2 ? (
+          {termTooShort ? (
             <div className="text-center py-10">
               <Search className="w-8 h-8 text-slate-200 mx-auto mb-2" />
               <p className="text-sm text-slate-400">Escriba al menos 2 caracteres para buscar.</p>
             </div>
-          ) : pageData.length === 0 ? (
+          ) : loading ? (
+            <div className="text-center py-10">
+              <Loader2 className="w-8 h-8 text-brand-300 mx-auto mb-2 animate-spin" />
+              <p className="text-sm text-slate-400">Buscando...</p>
+            </div>
+          ) : decoratedResults.length === 0 ? (
             <div className="text-center py-10">
               <Search className="w-8 h-8 text-slate-200 mx-auto mb-2" />
               <p className="text-sm text-slate-400">No se encontraron resultados.</p>
             </div>
           ) : (
-            pageData.map((persona) => {
+            decoratedResults.map((persona) => {
               const bloqueado = persona.asignado === true;
-              const asignador =
-                persona.asignadoPorNombreResolved ||
-                persona.asignadoPorNombre ||
-                (persona.asignadoRol === "Coordinador" ? "Superadmin" : "Asignado");
-              const asignadorRol = persona.asignadoPorRolResolved || persona.asignadoRol || "";
+              const asignador = persona.asignadoPorNombre || "Asignado";
+              const asignadorRol = ROL_LABEL[persona.asignadoRol] || "";
 
               return (
                 <div
@@ -166,31 +200,6 @@ const AddPersonModal = ({ show, onClose, tipo, onAdd, disponibles }) => {
             })
           )}
         </div>
-
-        {/* Pagination */}
-        {filtered.length > pageSize && (
-          <div className="flex items-center justify-between px-5 py-3 border-t border-slate-100 bg-slate-50 shrink-0">
-            <button
-              disabled={page === 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              className="inline-flex items-center gap-1 px-3 h-8 border border-slate-200 rounded-lg text-xs text-slate-600 disabled:opacity-40 bg-white hover:bg-slate-50 transition-colors"
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
-              Anterior
-            </button>
-            <span className="text-xs text-slate-500">
-              Página {page} de {totalPages}
-            </span>
-            <button
-              disabled={page === totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              className="inline-flex items-center gap-1 px-3 h-8 border border-slate-200 rounded-lg text-xs text-slate-600 disabled:opacity-40 bg-white hover:bg-slate-50 transition-colors"
-            >
-              Siguiente
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
 
         {/* Footer */}
         <div className="px-5 py-4 border-t border-slate-100 shrink-0">
